@@ -1,54 +1,67 @@
 from flask import Flask, request, jsonify, render_template_string
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
+import random
+from datetime import datetime
+import time
+import re
 
 app = Flask(__name__)
 
 # ==========================================
-# 1. TRAIN THE AI ON STARTUP
+# 1. AI MODEL INITIALIZATION
 # ==========================================
 print("Booting Server and Training AI...")
 try:
     df = pd.read_csv('synthetic_plant_data.csv')
     X = df[['Fuel_Input_Energy_GJ_per_hr', 'Steam_Temperature_C', 'Steam_Pressure_bar', 'Condenser_Pressure_bar']]
     y = df['Fault_Code']
-    model = RandomForestClassifier(random_state=42)
-    model.fit(X, y)
-    print("✅ AI Model successfully trained and ready!")
+    model = RandomForestClassifier(random_state=42).fit(X, y)
+    print("✅ AI Model successfully trained and active!")
 except Exception as e:
-    print(f"⚠️ Warning: Could not train AI. Is synthetic_plant_data.csv in the folder? Error: {e}")
+    print(f"⚠️ Warning: Could not train AI. {e}")
     model = None
 
-
 # ==========================================
-# 2. THE BACKEND CONTROL CENTER (DATABASE)
+# 2. USER ACCESS DATABASE
 # ==========================================
+# We create a "Root Admin" that comes pre-installed in the system.
+# Note: The password must meet your new security requirements!
 users_db = {
-    "admin": {"password": "admin", "role": "Plant Manager (Admin)", "status": "approved"}
+    "admin": {"password": "Admin@123!", "role": "Plant Manager (Admin)", "status": "approved"}
 }
 
 # ==========================================
-# 3. THE API ENDPOINTS
+# 3. AUTHENTICATION ENDPOINTS
 # ==========================================
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.json
     username = data.get('username')
-    if username in users_db:
-        return jsonify({"error": "Username already exists!"}), 400
+    password = data.get('password', '')
     
-    status = 'approved' if data.get('role') == 'Plant Manager (Admin)' else 'pending'
-    users_db[username] = {"password": data.get('password'), "role": data.get('role'), "status": status}
+    if username in users_db: return jsonify({"error": "User ID already active"}), 400
+    
+    # --- SECURITY PROTOCOL: Password Complexity Enforcement ---
+    if len(password) < 8:
+        return jsonify({"error": "Clearance denied: Password must be at least 8 characters."}), 400
+    if not re.search(r"[!@#$%^&*(),.?\":{}|<>]", password):
+        return jsonify({"error": "Clearance denied: Password requires at least 1 special character."}), 400
+    if not re.search(r"\d", password) or not re.search(r"[A-Z]", password):
+        return jsonify({"error": "Clearance denied: Password requires a number and an uppercase letter."}), 400
+    
+    # EVERYONE is 'pending' upon registration. Only an existing Admin can approve them.
+    status = 'pending'
+    users_db[username] = {"password": password, "role": data.get('role'), "status": status}
     return jsonify({"success": True, "user": {"username": username, "role": data.get('role'), "status": status}})
 
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
-    username = data.get('username')
-    user = users_db.get(username)
+    user = users_db.get(data.get('username'))
     if user and user['password'] == data.get('password'):
-        return jsonify({"success": True, "user": {"username": username, "role": user['role'], "status": user['status']}})
-    return jsonify({"error": "Invalid username or password"}), 401
+        return jsonify({"success": True, "user": {"username": data.get('username'), "role": user['role'], "status": user['status']}})
+    return jsonify({"error": "Invalid secure credentials"}), 401
 
 @app.route('/api/admin/users', methods=['GET'])
 def get_users():
@@ -62,458 +75,377 @@ def approve_user():
         return jsonify({"success": True})
     return jsonify({"error": "User not found"}), 404
 
-# --- THE NEW AI SCANNING ENDPOINT ---
-@app.route('/api/scan', methods=['POST'])
-def scan_csv():
-    if model is None:
-        return jsonify({"error": "AI Model is offline. Training data missing."}), 500
+# ==========================================
+# 4. REAL-TIME TELEMETRY STREAM
+# ==========================================
+@app.route('/api/telemetry', methods=['GET'])
+def get_telemetry():
+    """Returns a single live 'tick' of sensor data and the AI's instant prediction."""
+    if model is None: 
+        return jsonify({"error": "AI Model offline"}), 500
         
-    data = request.json
-    user_role = data.get('role')
+    role = request.args.get('role', 'Admin')
     
-    # Read the local CSV directly from the server folder instead of requiring an upload
-    try:
-        upload_df = pd.read_csv('synthetic_plant_data.csv')
-    except Exception as e:
-        return jsonify({"error": "Could not locate synthetic_plant_data.csv on server."}), 500
+    # 1. Simulate current physical sensor readings
+    # 85% normal, 7.5% boiler leak, 7.5% condenser fouling
+    state = random.choices([0, 1, 2], weights=[0.85, 0.075, 0.075])[0]
     
-    # Predict using the AI
-    X_live = upload_df[['Fuel_Input_Energy_GJ_per_hr', 'Steam_Temperature_C', 'Steam_Pressure_bar', 'Condenser_Pressure_bar']]
-    upload_df['Fault_Code'] = model.predict(X_live)
+    f = random.uniform(100, 120)
+    t = random.uniform(500, 520)
+    p = random.uniform(140, 160)
+    c = random.uniform(0.04, 0.08)
     
-    # Translate codes to text
-    def map_fault(code):
-        if code == 1: return "Boiler Tube Leak"
-        if code == 2: return "Condenser Fouling"
-        return "Normal"
-        
-    def map_location(code):
-        if code == 1: return "Boiler Sub-System"
-        if code == 2: return "Cooling Sub-System"
-        return "N/A"
-        
-    upload_df['Diagnosis'] = upload_df['Fault_Code'].apply(map_fault)
-    upload_df['Location'] = upload_df['Fault_Code'].apply(map_location)
+    if state == 1: # Boiler Leak signature
+        f, t, p = random.uniform(140, 180), random.uniform(490, 520), random.uniform(90, 120)
+    elif state == 2: # Condenser Fouling signature
+        c = random.uniform(0.15, 0.25)
+
+    # 2. Feed live data into AI Model
+    df_live = pd.DataFrame([[f, t, p, c]], columns=['Fuel_Input_Energy_GJ_per_hr', 'Steam_Temperature_C', 'Steam_Pressure_bar', 'Condenser_Pressure_bar'])
+    prediction = int(model.predict(df_live)[0])
     
-    # ROLE-BASED FILTERING
-    if user_role == 'Boiler Operator':
-        filtered_df = upload_df[upload_df['Fault_Code'] == 1]
-    elif user_role == 'Cooling Engineer':
-        filtered_df = upload_df[upload_df['Fault_Code'] == 2]
-    else: # Admin sees all faults
-        filtered_df = upload_df[upload_df['Fault_Code'] != 0]
+    # 3. Format the diagnostic payload
+    payload = {
+        "id": str(int(time.time() * 1000)), # Unique ID for React rendering
+        "timestamp": datetime.now().strftime("%H:%M:%S"),
+        "fuel": round(f, 2),
+        "temp": round(t, 2),
+        "pressure": round(p, 2),
+        "condenser": round(c, 3),
+        "alert_level": "normal",
+        "diagnosis": "System Optimal",
+        "location": "All Sectors"
+    }
+
+    # --- ROLE-BASED ACCESS CONTROL (RBAC) VISIBILITY ---
+    if role in ['Plant Manager (Admin)', 'Control Room Engineer']:
+        # Command level sees everything across all sectors
+        if prediction == 1:
+            payload["alert_level"] = "critical"
+            payload["diagnosis"] = "Boiler Tube Leak Detected"
+            payload["location"] = "Boiler Sub-System"
+        elif prediction == 2:
+            payload["alert_level"] = "warning"
+            payload["diagnosis"] = "Condenser Fouling Detected"
+            payload["location"] = "Cooling Sub-System"
+            
+    elif role == 'Boiler Operator':
+        # Boiler Operators ONLY see Boiler faults. Everything else shows as Normal.
+        payload["location"] = "Boiler Sub-System"
+        if prediction == 1:
+            payload["alert_level"] = "critical"
+            payload["diagnosis"] = "Boiler Tube Leak Detected"
+        else:
+            payload["diagnosis"] = "Boiler Operations Normal"
+            
+    elif role == 'Cooling Engineer':
+        # Cooling Engineers ONLY see Condenser faults. Everything else shows as Normal.
+        payload["location"] = "Cooling Sub-System"
+        if prediction == 2:
+            payload["alert_level"] = "warning"
+            payload["diagnosis"] = "Condenser Fouling Detected"
+        else:
+            payload["diagnosis"] = "Cooling Operations Normal"
+            
+    else:
+        # Map the new specialized operators to their respective plant sectors
+        sector_mapping = {
+            'Turbine Operator': 'Turbine & Generator Sector',
+            'Fuel/Coal Handling Plant (CHP) Operator': 'CHP Sector',
+            'Ash Handling Operator': 'Ash Plant Sector',
+            'Water Treatment/DM Plant Operator': 'DM Plant Sector',
+            'Electrical/Switchyard Operator': 'Switchyard Sector'
+        }
         
-    # Send results to frontend
-    results = []
-    for index, row in filtered_df.iterrows():
-        results.append({
-            "row": index + 1,
-            "location": row['Location'],
-            "pressure": round(row['Steam_Pressure_bar'], 2),
-            "condenser": round(row['Condenser_Pressure_bar'], 3),
-            "fuel": round(row['Fuel_Input_Energy_GJ_per_hr'], 2),
-            "diagnosis": row['Diagnosis']
-        })
-        
-    return jsonify(results)
+        # Since the current AI model only predicts Boiler/Condenser faults,
+        # these future-proofed sectors will default to Normal operations.
+        sector_name = sector_mapping.get(role, f"{role} Sector")
+        payload["location"] = sector_name
+        payload["diagnosis"] = f"{sector_name.replace(' Sector', '')} Operations Normal"
+
+    return jsonify(payload)
 
 # ==========================================
-# 4. THE FRONTEND UI (REACT HTML)
+# 5. ENTERPRISE FRONTEND (React)
 # ==========================================
 HTML_TEMPLATE = """
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Thermal Plant MTPC Auth</title>
-    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <title>MTPC Command Center</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        brand: { 500: '#3b82f6', 600: '#2563eb', 900: '#1e3a8a' },
+                        dark: { 800: '#111827', 900: '#0f172a', 950: '#020617' }
+                    },
+                    fontFamily: { mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'] }
+                }
+            }
+        }
+    </script>
     <style>
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { background: #09090b; }
-        ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
-        ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+        body { background-color: #020617; color: #f8fafc; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+        .blink { animation: blinker 1.5s linear infinite; }
+        @keyframes blinker { 50% { opacity: 0.3; } }
     </style>
 </head>
-<body class="bg-[#09090b] text-zinc-300 font-sans antialiased min-h-screen selection:bg-indigo-500/30">
+<body>
     <div id="root"></div>
-
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useRef } = React;
 
-        // --- Clean Minimalist SVGs ---
-        const ShieldIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-10 h-10 text-indigo-500 mb-6 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12c0 1.268-.63 2.39-1.593 3.068a3.745 3.745 0 01-1.043 3.296 3.745 3.745 0 01-3.296 1.043A3.745 3.745 0 0112 21c-1.268 0-2.39-.63-3.068-1.593a3.746 3.746 0 01-3.296-1.043 3.745 3.745 0 01-1.043-3.296A3.745 3.745 0 013 12c0-1.268.63-2.39 1.593-3.068a3.745 3.745 0 011.043-3.296 3.746 3.746 0 013.296-1.043A3.746 3.746 0 0112 3c1.268 0 2.39.63 3.068 1.593a3.746 3.746 0 013.296 1.043 3.746 3.746 0 011.043 3.296A3.745 3.745 0 0121 12z" /></svg>;
-        const LockIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-12 h-12 text-amber-500 mb-6 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" /></svg>;
-        const ActivityIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 13h2.243a2 2 0 011.897 1.368l1.267 3.8a2 2 0 003.786 0l2.52-7.56a2 2 0 013.786 0l1.267 3.8A2 2 0 0021.657 16H23" /></svg>;
-        const DatabaseIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-8 h-8 text-zinc-500 mb-3 mx-auto" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0v3.75C20.25 20.393 16.556 22.25 12 22.25s-8.25-1.847-8.25-4.125v-3.75" /></svg>;
-        const AlertIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-rose-500 inline mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>;
-        const MapPinIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4 text-zinc-500 inline mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 10.5a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 10.5c0 7.142-7.5 11.25-7.5 11.25S4.5 17.642 4.5 10.5a7.5 7.5 0 1115 0z" /></svg>;
+        // --- ICONS ---
+        const IconServer = () => <svg className="w-5 h-5 text-brand-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" /></svg>;
+        const IconActivity = () => <svg className="w-4 h-4 text-emerald-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>;
 
         function App() {
-            // UI State
-            const [user, setUser] = useState(null); 
-            const [authMode, setAuthMode] = useState('login'); 
-            const [formData, setFormData] = useState({ username: '', password: '', role: 'Boiler Operator' });
-            const [errorMsg, setErrorMsg] = useState('');
-            const [isLoading, setIsLoading] = useState(false);
+            // --- STATE ---
+            const [user, setUser] = useState(null);
+            const [authMode, setAuthMode] = useState('login');
+            const [creds, setCreds] = useState({ username: '', password: '', role: 'Boiler Operator' });
             
             // Admin State
             const [usersList, setUsersList] = useState([]);
             
-            // Scanner State
-            const [csvData, setCsvData] = useState([]);
-            const [isScanning, setIsScanning] = useState(false);
+            // Live Data State
+            const [stream, setStream] = useState([]); // Array of recent ticks
+            const [currentTick, setCurrentTick] = useState(null);
 
-            const fetchUsers = async () => {
-                try {
-                    const res = await fetch('/api/admin/users');
-                    const data = await res.json();
-                    setUsersList(data);
-                } catch (e) { console.error("Could not fetch users", e); }
+            // --- AUTH LOGIC ---
+            const handleAuth = async (e) => {
+                e.preventDefault();
+                const res = await fetch(authMode === 'login' ? '/api/login' : '/api/register', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(creds)
+                });
+                const data = await res.json();
+                if(data.success) setUser(data.user);
+                else alert(data.error);
             };
 
-            // Auto-refresh admin panel
+            // --- ADMIN POLLING ---
             useEffect(() => {
-                if (user && user.role === 'Plant Manager (Admin)') {
+                if (user?.role === 'Plant Manager (Admin)') {
+                    const fetchUsers = async () => {
+                        const res = await fetch('/api/admin/users');
+                        setUsersList(await res.json());
+                    };
                     fetchUsers();
-                    const interval = setInterval(fetchUsers, 3000);
-                    return () => clearInterval(interval);
+                    const int = setInterval(fetchUsers, 3000);
+                    return () => clearInterval(int);
                 }
             }, [user]);
 
-            const handleApprove = async (username) => {
-                await fetch('/api/admin/approve', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username })
-                });
-                fetchUsers();
+            const approveUser = async (username) => {
+                await fetch('/api/admin/approve', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username}) });
             };
 
-            const handleAuth = async (e) => {
-                e.preventDefault();
-                setErrorMsg('');
-                setIsLoading(true);
-                
-                const endpoint = authMode === 'login' ? '/api/login' : '/api/register';
-                
-                try {
-                    const res = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(formData)
-                    });
-                    const data = await res.json();
-                    
-                    if (data.success) {
-                        setUser(data.user);
-                    } else {
-                        setErrorMsg(data.error); 
-                    }
-                } catch (err) {
-                    setErrorMsg("Connection to server failed.");
-                }
-                setIsLoading(false);
-            };
-
-            // --- AI SCANNER FUNCTION ---
-            const handleScanDatabase = async () => {
-                setIsScanning(true);
-                setCsvData([]); // Clear old data
-
-                try {
-                    const res = await fetch('/api/scan', { 
-                        method: 'POST', 
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ role: user.role }) 
-                    });
-                    
-                    const anomalies = await res.json();
-                    if(anomalies.error) {
-                        alert(anomalies.error);
-                    } else {
-                        setCsvData(anomalies);
-                    }
-                } catch (err) {
-                    alert("Error communicating with scanner.");
-                }
-                setIsScanning(false);
-            };
-
-            // ----------------------------------------------------
-            // SCREEN 1: APPROVED DASHBOARD (Admin & Operators)
-            // ----------------------------------------------------
-            if (user && user.status === 'approved') {
-                return (
-                    <div className="min-h-screen bg-[#09090b]">
-                        {/* Clean Navbar */}
-                        <nav className="bg-[#09090b] border-b border-zinc-800 px-6 py-4 flex justify-between items-center sticky top-0 z-50">
-                            <div className="flex items-center gap-3">
-                                <div className="p-1.5 bg-zinc-900 border border-zinc-800 rounded-md">
-                                    <ActivityIcon />
-                                </div>
-                                <span className="text-lg font-semibold text-zinc-100 tracking-tight">MTPC Portal</span>
-                            </div>
-                            <div className="flex items-center gap-6">
-                                <div className="text-right hidden sm:block">
-                                    <div className="text-sm font-medium text-zinc-200">{user.username}</div>
-                                    <div className="text-xs text-zinc-500">{user.role}</div>
-                                </div>
-                                <button 
-                                    onClick={() => {setUser(null); setCsvData([]);}} 
-                                    className="text-zinc-400 hover:text-zinc-100 px-3 py-1.5 rounded-md text-sm font-medium transition-colors border border-transparent hover:border-zinc-800 hover:bg-zinc-900">
-                                    Sign Out
-                                </button>
-                            </div>
-                        </nav>
-
-                        <div className="p-6 md:p-8 max-w-7xl mx-auto space-y-6">
+            // --- REAL-TIME POLLING ENGINE ---
+            useEffect(() => {
+                let interval;
+                if (user && user.status === 'approved') {
+                    interval = setInterval(async () => {
+                        try {
+                            const res = await fetch(`/api/telemetry?role=${user.role}`);
+                            const newTick = await res.json();
                             
-                            {/* Header Section */}
-                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center pb-4 border-b border-zinc-800/50">
-                                <div>
-                                    <h1 className="text-2xl font-semibold text-zinc-100 mb-1">System Diagnostics</h1>
-                                    <p className="text-sm text-zinc-500">Authorized as <span className="text-zinc-300 font-medium">{user.role}</span></p>
-                                </div>
-                                {csvData.length > 0 && (
-                                    <div className="mt-4 md:mt-0 text-right bg-rose-500/10 border border-rose-500/20 px-4 py-2 rounded-lg">
-                                        <div className="text-2xl font-semibold text-rose-500 leading-none">{csvData.length}</div>
-                                        <div className="text-[10px] text-rose-400 uppercase tracking-widest font-semibold mt-1">Faults Detected</div>
-                                    </div>
-                                )}
-                            </div>
+                            // Update current readings
+                            setCurrentTick(newTick);
+                            
+                            // Prepend to history log (keep last 40)
+                            setStream(prev => [newTick, ...prev].slice(0, 40));
+                        } catch (err) {
+                            console.error("Stream interrupted", err);
+                        }
+                    }, 1500); // Fetch new data every 1.5 seconds
+                }
+                return () => clearInterval(interval);
+            }, [user]);
 
-                            {/* --- ADMIN ONLY PANEL --- */}
-                            {user.role === 'Plant Manager (Admin)' && (
-                                <div className="bg-[#09090b] rounded-xl border border-zinc-800 overflow-hidden">
-                                    <div className="px-6 py-4 border-b border-zinc-800 bg-zinc-900/30 flex justify-between items-center">
-                                        <h2 className="text-sm font-medium text-zinc-200">Access Management</h2>
-                                    </div>
-                                    
-                                    <div className="overflow-x-auto">
-                                        <table className="w-full text-left text-sm">
-                                            <thead className="bg-zinc-900/50 text-xs text-zinc-500 uppercase tracking-wider">
-                                                <tr>
-                                                    <th className="px-6 py-3 font-medium">User ID</th>
-                                                    <th className="px-6 py-3 font-medium">Role</th>
-                                                    <th className="px-6 py-3 font-medium">Status</th>
-                                                    <th className="px-6 py-3 font-medium text-right">Actions</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-zinc-800">
-                                                {usersList.map(u => (
-                                                    <tr key={u.username} className="hover:bg-zinc-900/30 transition-colors">
-                                                        <td className="px-6 py-4 font-medium text-zinc-300">{u.username}</td>
-                                                        <td className="px-6 py-4 text-zinc-400">{u.role}</td>
-                                                        <td className="px-6 py-4">
-                                                            {u.status === 'pending' ? (
-                                                                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                                                                    Pending
-                                                                </span>
-                                                            ) : (
-                                                                <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-                                                                    Approved
-                                                                </span>
-                                                            )}
-                                                        </td>
-                                                        <td className="px-6 py-4 text-right">
-                                                            {u.status === 'pending' ? (
-                                                                <button onClick={() => handleApprove(u.username)} className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-md text-xs font-medium transition-colors">
-                                                                    Approve
-                                                                </button>
-                                                            ) : (
-                                                                <span className="text-zinc-600 text-xs">Granted</span>
-                                                            )}
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
 
-                            {/* --- AI DATA SCAN & RESULTS AREA --- */}
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                                
-                                {/* Scan Action Box */}
-                                <div className="lg:col-span-1">
-                                    <div className="bg-[#09090b] rounded-xl border border-zinc-800 p-6 h-full flex flex-col items-center justify-center text-center">
-                                        <DatabaseIcon />
-                                        <h2 className="text-sm font-medium text-zinc-200 mb-2">Plant Database</h2>
-                                        <p className="text-xs text-zinc-500 mb-6">Connected to historical telemetry data.</p>
-                                        <button 
-                                            onClick={handleScanDatabase} 
-                                            disabled={isScanning}
-                                            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white py-2.5 rounded-md text-sm font-semibold transition-colors disabled:opacity-50 flex items-center justify-center h-10">
-                                            {isScanning ? (
-                                                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                                            ) : 'Run Diagnostics Scan'}
-                                        </button>
-                                    </div>
-                                </div>
-
-                                {/* Results Table */}
-                                <div className="lg:col-span-2">
-                                    <div className="bg-[#09090b] rounded-xl border border-zinc-800 flex flex-col h-[400px] overflow-hidden">
-                                        <div className="px-6 py-4 border-b border-zinc-800 bg-zinc-900/30 flex justify-between items-center">
-                                            <h2 className="text-sm font-medium text-zinc-200">Analysis Results</h2>
-                                            <span className="text-xs text-zinc-500 font-medium">Filter: {user.role}</span>
-                                        </div>
-
-                                        {isScanning ? (
-                                            <div className="flex-1 flex flex-col items-center justify-center">
-                                                <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-                                                <p className="text-sm text-zinc-400">Processing records...</p>
-                                            </div>
-                                        ) : csvData.length === 0 ? (
-                                            <div className="flex-1 flex flex-col items-center justify-center bg-zinc-900/10">
-                                                <p className="text-sm text-zinc-500">Awaiting diagnostic execution.</p>
-                                            </div>
-                                        ) : (
-                                            <div className="flex-1 overflow-auto">
-                                                <table className="w-full text-left text-sm whitespace-nowrap">
-                                                    <thead className="bg-[#09090b] text-xs uppercase text-zinc-500 sticky top-0 border-b border-zinc-800">
-                                                        <tr>
-                                                            <th className="px-6 py-3 font-medium">Row</th>
-                                                            <th className="px-6 py-3 font-medium">Location</th>
-                                                            <th className="px-6 py-3 font-medium">Steam Press.</th>
-                                                            <th className="px-6 py-3 font-medium">Fuel Input</th>
-                                                            <th className="px-6 py-3 font-medium">Diagnosis</th>
-                                                        </tr>
-                                                    </thead>
-                                                    <tbody className="divide-y divide-zinc-800">
-                                                        {csvData.map(row => (
-                                                            <tr key={row.row} className="hover:bg-zinc-900/50 transition-colors">
-                                                                <td className="px-6 py-3 text-zinc-400">#{row.row}</td>
-                                                                <td className="px-6 py-3 font-medium text-zinc-300">
-                                                                    <div className="flex items-center">
-                                                                        <MapPinIcon />
-                                                                        {row.location}
-                                                                    </div>
-                                                                </td>
-                                                                <td className="px-6 py-3 font-mono text-zinc-300">{row.pressure} <span className="text-zinc-600">bar</span></td>
-                                                                <td className="px-6 py-3 font-mono text-zinc-300">{row.fuel} <span className="text-zinc-600">GJ</span></td>
-                                                                <td className="px-6 py-3 font-medium text-rose-400">
-                                                                    <AlertIcon />
-                                                                    {row.diagnosis}
-                                                                </td>
-                                                            </tr>
-                                                        ))}
-                                                    </tbody>
-                                                </table>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                );
-            }
-
-            // ----------------------------------------------------
-            // SCREEN 2: PENDING APPROVAL (Workers awaiting admin)
-            // ----------------------------------------------------
-            if (user && user.status === 'pending') {
-                return (
-                    <div className="min-h-screen flex flex-col items-center justify-center p-4">
-                        <div className="w-full max-w-md bg-[#09090b] border border-zinc-800 rounded-xl p-8 text-center">
-                            <LockIcon />
-                            <h1 className="text-xl font-semibold text-zinc-100 mb-2">Clearance Required</h1>
-                            <p className="text-sm text-zinc-400 mb-6">
-                                Account <strong className="text-zinc-300">{user.username}</strong> is pending authorization for sector <strong className="text-zinc-300">{user.role}</strong>.
-                            </p>
-                            <button onClick={() => setUser(null)} className="text-sm text-indigo-400 hover:text-indigo-300 font-medium transition-colors">
-                                &larr; Return to Sign In
+            // ==========================================
+            // SCREEN 1: LOGIN
+            // ==========================================
+            if (!user) return (
+                <div className="min-h-screen flex items-center justify-center p-4 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-dark-950">
+                    <form onSubmit={handleAuth} className="w-full max-w-sm bg-dark-900/80 backdrop-blur-md p-8 rounded-2xl border border-slate-800 shadow-2xl">
+                        <div className="flex justify-center mb-6"><IconServer /></div>
+                        <h1 className="text-xl font-bold mb-2 text-white text-center tracking-tight">MTPC COMMAND CENTER</h1>
+                        <p className="text-slate-400 text-xs text-center mb-8 uppercase tracking-widest">Secure Gateway</p>
+                        
+                        <div className="space-y-4">
+                            <input required className="w-full bg-dark-950 border border-slate-800 p-3 rounded-lg text-sm text-white focus:border-brand-500 focus:outline-none transition-colors" placeholder="Operator ID" onChange={e => setCreds({...creds, username: e.target.value})} />
+                            <input required className="w-full bg-dark-950 border border-slate-800 p-3 rounded-lg text-sm text-white focus:border-brand-500 focus:outline-none transition-colors" type="password" placeholder="Access Code" onChange={e => setCreds({...creds, password: e.target.value})} />
+                            {authMode === 'register' && 
+                                <select className="w-full bg-dark-950 border border-slate-800 p-3 rounded-lg text-sm text-white focus:border-brand-500 focus:outline-none" onChange={e => setCreds({...creds, role: e.target.value})}>
+                                    <option>Plant Manager (Admin)</option>
+                                    <option>Control Room Engineer</option>
+                                    <option>Boiler Operator</option>
+                                    <option>Cooling Engineer</option>
+                                    <option>Turbine Operator</option>
+                                    <option>Fuel/Coal Handling Plant (CHP) Operator</option>
+                                    <option>Ash Handling Operator</option>
+                                    <option>Water Treatment/DM Plant Operator</option>
+                                    <option>Electrical/Switchyard Operator</option>
+                                </select>
+                            }
+                            <button className="w-full bg-brand-600 hover:bg-brand-500 text-white py-3 rounded-lg text-sm font-semibold transition-colors mt-2">
+                                {authMode === 'login' ? 'INITIALIZE SESSION' : 'REQUEST CLEARANCE'}
                             </button>
                         </div>
-                    </div>
-                );
-            }
+                        <p className="text-center mt-6 text-xs cursor-pointer text-slate-500 hover:text-white transition-colors" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}>
+                            {authMode === 'login' ? 'REGISTER NEW PERSONNEL' : 'RETURN TO LOGIN'}
+                        </p>
+                    </form>
+                </div>
+            );
 
-            // ----------------------------------------------------
-            // SCREEN 3: LOGIN / REGISTER (Not authenticated)
-            // ----------------------------------------------------
+            // ==========================================
+            // SCREEN 2: PENDING
+            // ==========================================
+            if (user.status === 'pending') return (
+                <div className="min-h-screen flex items-center justify-center bg-dark-950">
+                    <div className="text-center border border-amber-500/30 bg-amber-500/10 p-8 rounded-xl">
+                        <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                        <h2 className="text-amber-500 font-bold tracking-widest uppercase">Clearance Pending</h2>
+                        <p className="text-amber-200/50 text-sm mt-2">Awaiting Plant Manager authorization.</p>
+                    </div>
+                </div>
+            );
+
+            // ==========================================
+            // SCREEN 3: LIVE DASHBOARD
+            // ==========================================
             return (
-                <div className="min-h-screen flex items-center justify-center p-4">
-                    <div className="w-full max-w-[400px] bg-[#09090b] border border-zinc-800 rounded-xl p-8 shadow-2xl">
-                        <ShieldIcon />
-                        <h1 className="text-xl font-semibold text-zinc-100 text-center mb-1">MTPC Gateway</h1>
-                        <p className="text-zinc-500 text-sm text-center mb-8">Sign in to access telemetry.</p>
+                <div className="min-h-screen bg-dark-950 p-4 md:p-8">
+                    
+                    {/* Top Navigation */}
+                    <div className="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
+                        <div>
+                            <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-3">
+                                MTPC <span className="text-slate-500 font-light">|</span> Command Center
+                            </h1>
+                            <p className="text-xs text-slate-400 mt-1 uppercase tracking-widest font-mono">Role: {user.role}</p>
+                        </div>
                         
-                        {errorMsg && (
-                            <div className="bg-rose-500/10 border border-rose-500/20 text-rose-500 px-4 py-3 rounded-md mb-6 text-sm text-center font-medium">
-                                {errorMsg}
+                        <div className="flex items-center gap-4">
+                            {/* Live Feed Indicator */}
+                            <div className="flex items-center gap-2 px-4 py-2 rounded-md font-bold text-[10px] uppercase tracking-widest bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 blink"></span>
+                                System Active
                             </div>
-                        )}
-                        
-                        <form onSubmit={handleAuth} className="space-y-4">
-                            <div>
-                                <label className="block text-xs font-medium text-zinc-400 mb-1.5">USER ID</label>
-                                <input type="text" required
-                                    className="w-full bg-zinc-950 border border-zinc-800 rounded-md px-3 py-2.5 text-sm text-zinc-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all outline-none"
-                                    value={formData.username} onChange={e => setFormData({...formData, username: e.target.value})} />
-                            </div>
-                            
-                            <div>
-                                <label className="block text-xs font-medium text-zinc-400 mb-1.5">PASSWORD</label>
-                                <input type="password" required
-                                    className="w-full bg-zinc-950 border border-zinc-800 rounded-md px-3 py-2.5 text-sm text-zinc-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all outline-none"
-                                    value={formData.password} onChange={e => setFormData({...formData, password: e.target.value})} />
-                            </div>
-                            
-                            {authMode === 'register' && (
-                                <div>
-                                    <label className="block text-xs font-medium text-zinc-400 mb-1.5">SECTOR</label>
-                                    <select 
-                                        className="w-full bg-zinc-950 border border-zinc-800 rounded-md px-3 py-2.5 text-sm text-zinc-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all outline-none appearance-none"
-                                        value={formData.role} onChange={e => setFormData({...formData, role: e.target.value})}>
-                                        <option>Boiler Operator</option>
-                                        <option>Cooling Engineer</option>
-                                        <option>Plant Manager (Admin)</option>
-                                    </select>
+                            <button onClick={() => {setUser(null); setStream([]);}} className="text-slate-500 hover:text-white text-sm transition-colors">Logout</button>
+                        </div>
+                    </div>
+
+                    {/* Admin Panel */}
+                    {user.role === 'Plant Manager (Admin)' && (
+                        <div className="mb-8 bg-dark-900 border border-brand-500/30 rounded-xl p-4">
+                            <h2 className="text-brand-500 text-xs font-bold uppercase tracking-widest mb-3">Personnel Access Management</h2>
+                            {usersList.filter(u => u.status === 'pending').length === 0 ? (
+                                <p className="text-slate-500 text-sm italic">No pending authorization requests.</p>
+                            ) : (
+                                <div className="space-y-2">
+                                    {usersList.filter(u => u.status === 'pending').map(u => (
+                                        <div key={u.username} className="flex justify-between items-center bg-dark-950 p-3 rounded-lg border border-slate-800">
+                                            <span className="text-sm">{u.username} <span className="text-slate-500">({u.role})</span></span>
+                                            <button onClick={() => approveUser(u.username)} className="bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 px-3 py-1 rounded text-xs font-bold transition-colors">Authorize</button>
+                                        </div>
+                                    ))}
                                 </div>
                             )}
-                            
-                            <button type="submit" disabled={isLoading}
-                                className="w-full bg-zinc-100 hover:bg-white text-zinc-950 py-2.5 rounded-md text-sm font-semibold transition-all mt-6 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center h-10">
-                                {isLoading ? (
-                                    <div className="w-4 h-4 border-2 border-zinc-950 border-t-transparent rounded-full animate-spin"></div>
-                                ) : (
-                                    authMode === 'login' ? 'Sign In' : 'Create Account'
-                                )}
-                            </button>
-                        </form>
+                        </div>
+                    )}
+
+                    {/* Live Metrics Grid */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                        <MetricCard title="Steam Temp" value={currentTick ? currentTick.temp : '--'} unit="°C" status={currentTick?.alert_level} />
+                        <MetricCard title="Steam Press" value={currentTick ? currentTick.pressure : '--'} unit="bar" status={currentTick?.alert_level} />
+                        <MetricCard title="Condenser" value={currentTick ? currentTick.condenser : '--'} unit="bar" status={currentTick?.alert_level} />
+                        <MetricCard title="Fuel Input" value={currentTick ? currentTick.fuel : '--'} unit="GJ/hr" status={currentTick?.alert_level} />
+                    </div>
+
+                    {/* Rolling Event Log */}
+                    <div className="bg-dark-900 border border-slate-800 rounded-xl overflow-hidden flex flex-col h-[500px]">
+                        <div className="px-6 py-4 border-b border-slate-800 bg-dark-950/50 flex justify-between items-center">
+                            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-widest">Diagnostic Event Log</h2>
+                            <span className="text-xs font-mono text-slate-500">{stream.length} packets buffered</span>
+                        </div>
                         
-                        <div className="mt-6 text-center text-sm">
-                            <span className="text-zinc-500">
-                                {authMode === 'login' ? "No account? " : "Have an account? "}
-                            </span>
-                            <button onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setErrorMsg(''); }} 
-                                className="text-zinc-300 hover:text-white font-medium transition-colors">
-                                {authMode === 'login' ? 'Register' : 'Sign In'}
-                            </button>
+                        <div className="flex-1 overflow-auto bg-dark-900">
+                            <table className="w-full text-left text-sm whitespace-nowrap">
+                                <thead className="bg-dark-950/80 text-xs uppercase text-slate-500 sticky top-0 backdrop-blur-sm">
+                                    <tr>
+                                        <th className="px-6 py-3 font-medium">Timestamp</th>
+                                        <th className="px-6 py-3 font-medium">Sector</th>
+                                        <th className="px-6 py-3 font-medium">AI Diagnosis</th>
+                                        <th className="px-6 py-3 font-medium text-right">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-800/50">
+                                    {stream.length === 0 && (
+                                        <tr><td colSpan="4" className="px-6 py-10 text-center text-slate-500 italic">Awaiting data stream...</td></tr>
+                                    )}
+                                    {stream.map((row) => (
+                                        <tr key={row.id} className={`transition-colors font-mono text-xs ${row.alert_level === 'critical' ? 'bg-rose-500/10' : row.alert_level === 'warning' ? 'bg-amber-500/10' : 'hover:bg-dark-800'}`}>
+                                            <td className="px-6 py-3 text-slate-400">{row.timestamp}</td>
+                                            <td className={`px-6 py-3 ${row.alert_level !== 'normal' ? 'font-bold text-white' : 'text-slate-300'}`}>{row.location}</td>
+                                            <td className={`px-6 py-3 ${row.alert_level === 'critical' ? 'text-rose-400 font-bold' : row.alert_level === 'warning' ? 'text-amber-400 font-bold' : 'text-slate-400'}`}>
+                                                {row.diagnosis}
+                                            </td>
+                                            <td className="px-6 py-3 text-right">
+                                                <span className={`inline-block px-2 py-1 rounded-sm text-[10px] uppercase tracking-widest font-bold ${
+                                                    row.alert_level === 'critical' ? 'bg-rose-500 text-white' : 
+                                                    row.alert_level === 'warning' ? 'bg-amber-500 text-white' : 
+                                                    'bg-emerald-500/20 text-emerald-400'
+                                                }`}>
+                                                    {row.alert_level}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
             );
         }
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
+        // Helper Component for Metrics
+        function MetricCard({ title, value, unit, status }) {
+            const isDanger = status === 'critical' || status === 'warning';
+            return (
+                <div className={`p-4 rounded-xl border transition-colors ${isDanger ? 'bg-rose-500/5 border-rose-500/30' : 'bg-dark-900 border-slate-800'}`}>
+                    <h3 className="text-slate-500 text-xs uppercase tracking-widest font-semibold mb-1">{title}</h3>
+                    <div className="flex items-baseline gap-1">
+                        <span className={`text-2xl font-mono tracking-tight font-bold ${isDanger ? 'text-rose-400' : 'text-white'}`}>{value}</span>
+                        <span className="text-slate-500 text-xs font-mono">{unit}</span>
+                    </div>
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
     </script>
 </body>
 </html>
 """
 
 @app.route('/')
-def home():
-    return render_template_string(HTML_TEMPLATE)
+def home(): return render_template_string(HTML_TEMPLATE)
 
 if __name__ == '__main__':
-    print("Starting Flask MTPC Server on http://127.0.0.1:5000")
     app.run(debug=True, port=5000)
