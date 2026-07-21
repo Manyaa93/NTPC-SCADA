@@ -335,7 +335,7 @@ HTML_TEMPLATE = """
                     <div className="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
                         <div>
                             <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-3">
-                                NTPC <span className="text-slate-500 font-light">|</span> Command Center
+                                NTPC <span className="text-slate-500 font-light">|</span>
                             </h1>
                             <p className="text-xs text-slate-400 mt-1 uppercase tracking-widest font-mono">Role: {user.role}</p>
                         </div>
