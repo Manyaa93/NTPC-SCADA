@@ -174,7 +174,7 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MTPC Command Center</title>
+    <title>NTPC Command Center</title>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -282,7 +282,7 @@ HTML_TEMPLATE = """
                 <div className="min-h-screen flex items-center justify-center p-4 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] bg-dark-950">
                     <form onSubmit={handleAuth} className="w-full max-w-sm bg-dark-900/80 backdrop-blur-md p-8 rounded-2xl border border-slate-800 shadow-2xl">
                         <div className="flex justify-center mb-6"><IconServer /></div>
-                        <h1 className="text-xl font-bold mb-2 text-white text-center tracking-tight">MTPC COMMAND CENTER</h1>
+                        <h1 className="text-xl font-bold mb-2 text-white text-center tracking-tight">NTPC COMMAND CENTER</h1>
                         <p className="text-slate-400 text-xs text-center mb-8 uppercase tracking-widest">Secure Gateway</p>
                         
                         <div className="space-y-4">
@@ -335,7 +335,7 @@ HTML_TEMPLATE = """
                     <div className="flex justify-between items-center mb-8 border-b border-slate-800 pb-4">
                         <div>
                             <h1 className="text-2xl font-bold tracking-tight text-white flex items-center gap-3">
-                                MTPC <span className="text-slate-500 font-light">|</span> Command Center
+                                NTPC <span className="text-slate-500 font-light">|</span> Command Center
                             </h1>
                             <p className="text-xs text-slate-400 mt-1 uppercase tracking-widest font-mono">Role: {user.role}</p>
                         </div>
